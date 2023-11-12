@@ -8,7 +8,7 @@ import type {
 } from "lucia"
 import { LuciaError } from "lucia"
 
-type Options = {
+export type Options = {
 	doUser: boolean
 	authPrefix: Deno.KvKeyPart[]
 	prefixes: {
