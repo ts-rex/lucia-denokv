@@ -7,5 +7,5 @@ declare namespace Lucia {
 }
 
 declare namespace window {
-    type keyFunc = (id: string) => Deno.KvKeyPart[]
+	type keyFunc = (id: string) => Deno.KvKeyPart[]
 }

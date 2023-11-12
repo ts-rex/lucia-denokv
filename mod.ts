@@ -7,7 +7,14 @@ import type {
 	UserSchema,
 } from "lucia"
 import { LuciaError } from "lucia"
-import { createGet, createUpdate, createGetByUserId, createSetOfUser, createDeleteOfUser, createDeleteXsByUserId } from "./factory.ts"
+import {
+	createDeleteOfUser,
+	createDeleteXsByUserId,
+	createGet,
+	createGetByUserId,
+	createSetOfUser,
+	createUpdate,
+} from "./factory.ts"
 
 export type Options = {
 	doUser: boolean
@@ -86,30 +93,70 @@ export default function kv(
 	const keys = createKeys(opt)
 
 	const session: SessionAdapter = {
-    getSession: createGet<SessionSchema>(database, keys.session),
-    getSessionsByUserId: createGetByUserId<SessionSchema>(database, keys.session, keys.keysByUser),
-    updateSession: createUpdate<SessionSchema>(database, keys.session),
-    setSession: createSetOfUser<SessionSchema, UserSchema>(database, keys.user, keys.session, keys.sessionsByUser, keys.userBySession),
-    deleteSession: createDeleteOfUser(database, keys.session, keys.sessionsByUser, keys.userBySession),
-    deleteSessionsByUserId: createDeleteXsByUserId(database, keys.session, keys.sessionsByUser, keys.userBySession)
+		getSession: createGet<SessionSchema>(database, keys.session),
+		getSessionsByUserId: createGetByUserId<SessionSchema>(
+			database,
+			keys.session,
+			keys.keysByUser,
+		),
+		updateSession: createUpdate<SessionSchema>(database, keys.session),
+		setSession: createSetOfUser<SessionSchema, UserSchema>(
+			database,
+			keys.user,
+			keys.session,
+			keys.sessionsByUser,
+			keys.userBySession,
+		),
+		deleteSession: createDeleteOfUser(
+			database,
+			keys.session,
+			keys.sessionsByUser,
+			keys.userBySession,
+		),
+		deleteSessionsByUserId: createDeleteXsByUserId(
+			database,
+			keys.session,
+			keys.sessionsByUser,
+			keys.userBySession,
+		),
 	}
 
 	const user: UserAdapter = {
-    getUser: createGet<UserSchema>(database, keys.user),
-    getKey: createGet<KeySchema>(database, keys.key),
-    getKeysByUserId: createGetByUserId<KeySchema>(database, keys.key, keys.keysByUser),
-    updateKey: createUpdate<KeySchema>(database, keys.key),
-    updateUser: createUpdate<UserSchema>(database, keys.user),
-    setKey: createSetOfUser<KeySchema, UserSchema>(database, keys.user, keys.key, keys.keysByUser, keys.userByKey),
-    deleteKey: createDeleteOfUser(database, keys.key, keys.keysByUser, keys.userByKey),
-    deleteKeysByUserId: createDeleteXsByUserId(database, keys.key, keys.keysByUser, keys.userByKey),
+		getUser: createGet<UserSchema>(database, keys.user),
+		getKey: createGet<KeySchema>(database, keys.key),
+		getKeysByUserId: createGetByUserId<KeySchema>(
+			database,
+			keys.key,
+			keys.keysByUser,
+		),
+		updateKey: createUpdate<KeySchema>(database, keys.key),
+		updateUser: createUpdate<UserSchema>(database, keys.user),
+		setKey: createSetOfUser<KeySchema, UserSchema>(
+			database,
+			keys.user,
+			keys.key,
+			keys.keysByUser,
+			keys.userByKey,
+		),
+		deleteKey: createDeleteOfUser(
+			database,
+			keys.key,
+			keys.keysByUser,
+			keys.userByKey,
+		),
+		deleteKeysByUserId: createDeleteXsByUserId(
+			database,
+			keys.key,
+			keys.keysByUser,
+			keys.userByKey,
+		),
 		async setUser(user, key) {
 			if (key) {
 				const exists = await database.get<KeySchema>(keys.key(key.id))
 				if (exists.value) throw new LuciaError("AUTH_DUPLICATE_KEY_ID")
 			}
-      const exists = await database.get<UserSchema>(keys.user(user.id))
-      if(exists.value) throw new LuciaError("AUTH_INVALID_USER_ID")
+			const exists = await database.get<UserSchema>(keys.user(user.id))
+			if (exists.value) throw new LuciaError("AUTH_INVALID_USER_ID")
 			const tx = database.atomic()
 			tx.set(keys.user(user.id), user)
 			if (key) {
