@@ -1,0 +1,15 @@
+{
+  "version": "3",
+  "packages": {
+    "specifiers": {
+      "npm:lucia@2.7.4": "npm:lucia@2.7.4"
+    },
+    "npm": {
+      "lucia@2.7.4": {
+        "integrity": "sha512-do6Aah5kX2DUl7N0CvELWV1/b+qZGF0AUmUrkthYeNfXfgx4RAkWi4BkAlgGDBB/0c1WApb18mUD1pA5qTaWmw==",
+        "dependencies": {}
+      }
+    }
+  },
+  "remote": {}
+}

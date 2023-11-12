@@ -5,3 +5,7 @@ declare namespace Lucia {
 	type DatabaseUserAttributes = {}
 	type DatabaseSessionAttributes = {}
 }
+
+declare namespace window {
+    type keyFunc = (id: string) => Deno.KvKeyPart[]
+}
