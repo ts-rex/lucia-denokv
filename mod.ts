@@ -18,6 +18,12 @@ import {
 
 export type Options = {
 	doUser: boolean
+	/**
+	 * for deleting custom values when the adapter deletes the main auth data
+	 * @param tx 
+	 * @param user_id 
+	 */
+	onDelete(tx: Deno.AtomicOperation, user_id: string): unknown,
 	authPrefix: Deno.KvKeyPart[]
 	prefixes: {
 		user: Deno.KvKeyPart[]
@@ -80,6 +86,7 @@ export default function kv(
 	const opt: Options = Object.assign<Options, Partial<Options>>({
 		doUser: true,
 		authPrefix: ["auth"],
+		onDelete: () => {},
 		prefixes: {
 			user: ["user"],
 			key: ["key"],
