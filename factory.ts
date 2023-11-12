@@ -1,3 +1,5 @@
+import { LuciaError, LuciaErrorConstructor } from "lucia"
+
 type Schema = { id: string }
 type SchemaWithUser = Schema & { user_id: string }
 
@@ -7,10 +9,15 @@ function createGet<T extends Schema>(db: Deno.Kv, key: window.keyFunc) {
 	}
 }
 
-function createUpdate<T extends Schema>(db: Deno.Kv, key: window.keyFunc) {
+function createUpdate<T extends Schema>(
+	db: Deno.Kv,
+	key: window.keyFunc,
+	errname: string,
+	error: LuciaErrorConstructor,
+) {
 	return async (id: string, partial: Partial<T>) => {
 		const value = (await db.get<T>(key(id))).value
-		if (!value) throw new Error("Invalid ID")
+		if (!value) throw new error(`AUTH_INVALID_${errname.toUpperCase()}_ID`)
 		const newVal = { ...value, ...partial }
 		await db.set(key(id), newVal)
 	}
@@ -36,13 +43,14 @@ function createSetOfUser<T extends SchemaWithUser, User extends Schema>(
 	key: window.keyFunc,
 	xByUser: window.keyFunc,
 	userByX: window.keyFunc,
+	error: LuciaErrorConstructor,
 ) {
 	return async (data: T) => {
-		if (!data.user_id) throw new Error("Invalid user ID")
+		if (!data.user_id) throw new error("AUTH_INVALID_USER_ID")
 		const user = (await db.get<User>(userKey(data.user_id))).value
-		if (!user) throw new Error("Invalid User ID")
+		if (!user) throw new error("AUTH_INVALID_USER_ID")
 		const exists = (await db.get<T>(key(data.id))).value
-		if (exists) throw new Error("Duplicate Key")
+		if (exists) throw new error("AUTH_DUPLICATE_KEY_ID")
 		const oldValues =
 			(await db.get<string[]>(xByUser(data.user_id))).value ?? []
 		await db.atomic()
