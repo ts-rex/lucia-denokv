@@ -1,5 +1,5 @@
 {
 	"imports": {
-		"lucia": "npm:lucia@2.7.4"
+		"lucia": "npm:lucia@3.0.0-beta.12"
 	}
 }

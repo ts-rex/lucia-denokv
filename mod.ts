@@ -1,28 +1,5 @@
-import type {
-	Adapter,
-	InitializeAdapter,
-	KeySchema,
-	SessionAdapter,
-	SessionSchema,
-	UserAdapter,
-	UserSchema,
-} from "lucia"
-import {
-	createDeleteOfUser,
-	createDeleteXsByUserId,
-	createGet,
-	createGetByUserId,
-	createSetOfUser,
-	createUpdate,
-} from "./factory.ts"
-
+import type { Adapter, DatabaseSession, DatabaseUser } from "lucia"
 export type Options = {
-	/**
-	 * Runs whenever a user is deleted, incase there is any user data that should be cascaded on delete.
-	 * @param tx
-	 * @param user_id
-	 */
-	onDelete(tx: Deno.AtomicOperation, user_id: string): void
 	/**
 	 * Prefix added to all db calls with the adapter.
 	 */
@@ -33,11 +10,8 @@ export type Options = {
 	prefixes: {
 		user: Deno.KvKeyPart[]
 		session: Deno.KvKeyPart[]
-		key: Deno.KvKeyPart[]
-		key_user: Deno.KvKeyPart[]
-		user_sessions: Deno.KvKeyPart[]
-		user_keys: Deno.KvKeyPart[]
 		session_user: Deno.KvKeyPart[]
+		user_sessions: Deno.KvKeyPart[]
 	}
 }
 
@@ -47,11 +21,8 @@ function createKeys(
 		prefixes: {
 			user,
 			session,
-			key,
-			key_user,
-			user_sessions,
-			user_keys,
 			session_user,
+			user_sessions,
 		},
 	}: Options,
 ) {
@@ -71,165 +42,151 @@ function createKeys(
 		sessionsByUser(user_id: string) {
 			return authPrefix([...user_sessions, user_id])
 		},
-		key(key_id: string) {
-			return authPrefix([...key, key_id])
-		},
-		userByKey(key_id: string) {
-			return authPrefix([...key_user, key_id])
-		},
-		keysByUser(user_id: string) {
-			return authPrefix([...user_keys, user_id])
-		},
 	}
 }
 
+type DeleteCallback = {
+	(tx: Deno.AtomicOperation, userId: string): void | Promise<void>
+}
+type UserDelete = (userId: string, cb: DeleteCallback) => void
+
+type DenoKvAdapter = { deleteUser: UserDelete; adapter: Adapter }
+
 export default function kv(
-	database: Deno.Kv,
+	db: Deno.Kv,
 	options?: Partial<Options>,
-): InitializeAdapter<Adapter> {
-	if (!window?.Deno) throw new Error("Are you running in Deno?")
+): DenoKvAdapter {
+	if (!globalThis?.Deno) throw new Error("Are you running in Deno?")
 	const opt: Options = Object.assign<Options, Partial<Options>>({
 		authPrefix: ["auth"],
-		onDelete: () => {},
 		prefixes: {
 			user: ["user"],
-			key: ["key"],
-			key_user: ["key_user"],
 			session: ["session"],
 			session_user: ["session_user"],
-			user_keys: ["user_keys"],
 			user_sessions: ["user_sessions"],
 		},
 	}, options || {})
 	const keys = createKeys(opt)
-	return (LuciaError) => {
-		const session: SessionAdapter = {
-			getSession: createGet<SessionSchema>(database, keys.session),
-			getSessionsByUserId: createGetByUserId<SessionSchema>(
-				database,
-				keys.session,
-				keys.keysByUser,
-			),
-			updateSession: createUpdate<SessionSchema>(
-				database,
-				keys.session,
-				"session",
-				LuciaError,
-			),
-			setSession: createSetOfUser<SessionSchema, UserSchema>(
-				database,
-				keys.user,
-				keys.session,
-				keys.sessionsByUser,
-				keys.userBySession,
-				LuciaError,
-			),
-			deleteSession: createDeleteOfUser(
-				database,
-				keys.session,
-				keys.sessionsByUser,
-				keys.userBySession,
-			),
-			deleteSessionsByUserId: createDeleteXsByUserId(
-				database,
-				keys.session,
-				keys.sessionsByUser,
-				keys.userBySession,
-			),
-		}
-
-		const user: UserAdapter = {
-			getUser: createGet<UserSchema>(database, keys.user),
-			getKey: createGet<KeySchema>(database, keys.key),
-			getKeysByUserId: createGetByUserId<KeySchema>(
-				database,
-				keys.key,
-				keys.keysByUser,
-			),
-			updateKey: createUpdate<KeySchema>(
-				database,
-				keys.key,
-				"key",
-				LuciaError,
-			),
-			updateUser: createUpdate<UserSchema>(
-				database,
-				keys.user,
-				"user",
-				LuciaError,
-			),
-			setKey: createSetOfUser<KeySchema, UserSchema>(
-				database,
-				keys.user,
-				keys.key,
-				keys.keysByUser,
-				keys.userByKey,
-				LuciaError,
-			),
-			deleteKey: createDeleteOfUser(
-				database,
-				keys.key,
-				keys.keysByUser,
-				keys.userByKey,
-			),
-			deleteKeysByUserId: createDeleteXsByUserId(
-				database,
-				keys.key,
-				keys.keysByUser,
-				keys.userByKey,
-			),
-			async setUser(user, key) {
-				if (key) {
-					const exists = await database.get<KeySchema>(
-						keys.key(key.id),
-					)
-					if (exists.value) {
-						throw new LuciaError("AUTH_DUPLICATE_KEY_ID")
-					}
-				}
-				const exists = await database.get<UserSchema>(
-					keys.user(user.id),
+	const adapter: Adapter = {
+		async deleteSession(sessionId) {
+			const userId =
+				(await db.get<string>(keys.userBySession(sessionId))).value
+			if (!userId) return
+			const list =
+				((await db.get<string[]>(keys.sessionsByUser(userId))).value ??
+					[])
+					.filter((list_id) => list_id !== sessionId)
+			await db.atomic()
+				.delete(keys.session(sessionId))
+				.set(keys.sessionsByUser(userId), list)
+				.delete(keys.userBySession(sessionId))
+				.commit()
+		},
+		async deleteUserSessions(userId) {
+			const list =
+				(await db.get<string[]>(keys.sessionsByUser(userId))).value ??
+					[]
+			const tx = db.atomic()
+				.set(keys.sessionsByUser(userId), [])
+			list.forEach((id) => {
+				tx.delete(keys.userBySession(id))
+				tx.delete(keys.session(id))
+			})
+			await tx.commit()
+		},
+		// Make sure to return session even if user could not be found, tells lucia to delete the stale session
+		async getSessionAndUser(sessionId) {
+			const session =
+				(await db.get<DatabaseSession>(keys.session(sessionId))).value
+			if (!session) return [null, null]
+			const userId =
+				(await db.get<string>(keys.userBySession(sessionId))).value
+			if (!userId) return [session, null]
+			const user = (await db.get<DatabaseUser>(
+				keys.user(userId),
+			)).value
+			if (!user) return [session, null]
+			return [session, user]
+		},
+		async getUserSessions(userId) {
+			const sessionids =
+				(await db.get<string[]>(keys.sessionsByUser(userId))).value
+			if (!sessionids) return []
+			const sessionkeys = sessionids.map((id) => keys.session(id))
+			const list = await db.getMany<DatabaseSession[]>(sessionkeys)
+			return list.map((key) => key.value).filter((key) =>
+				key !== null
+			) as DatabaseSession[]
+		},
+		async setSession(session) {
+			if (!session.userId) {
+				throw new MissingSessionUserID(
+					"Missing User ID when setting session.",
 				)
-				if (exists.value) throw new LuciaError("AUTH_INVALID_USER_ID")
-				const tx = database.atomic()
-				tx.set(keys.user(user.id), user)
-				if (key) {
-					const uKeys =
-						(await database.get<string[]>(keys.keysByUser(user.id)))
-							.value ?? []
-					const newUKeys = [uKeys, key.id]
-					tx.set(keys.key(key.id), key)
-					tx.set(keys.keysByUser(user.id), newUKeys)
-					tx.set(keys.userByKey(key.user_id), key.id)
-				}
-				const ok = (await tx.commit()).ok
-				if (!ok) {
-					throw new LuciaError("UNKNOWN_ERROR")
-				}
-			},
-			async deleteUser(user_id) {
-				const deleteKeys =
-					(await database.get<string[]>(keys.keysByUser(user_id)))
-						.value
-				const deleteSessions =
-					(await database.get<string[]>(keys.sessionsByUser(user_id)))
-						.value
-				const tx = await database.atomic()
-					.delete(keys.user(user_id))
-					.delete(keys.keysByUser(user_id))
-					.delete(keys.sessionsByUser(user_id))
-				await opt.onDelete(tx, user_id)
-				deleteKeys?.forEach((id) => {
-					tx.delete(keys.key(id))
-					tx.delete(keys.userByKey(id))
+			}
+			const user =
+				(await db.get<DatabaseUser>(keys.user(session.userId))).value
+			if (!user) {
+				throw new SessionUserNotFound(
+					"Invalid User ID when setting session.",
+				)
+			}
+			const exists =
+				(await db.get<DatabaseSession>(keys.session(session.id))).value
+			if (exists) {
+				throw new SessionExists(
+					"Attempting to set session that already exists.",
+				)
+			}
+			const oldValues =
+				(await db.get<string[]>(keys.sessionsByUser(session.userId)))
+					.value ?? []
+			await db.atomic()
+				.set(keys.session(session.id), session)
+				.set(keys.sessionsByUser(session.userId), [
+					...oldValues,
+					session.id,
+				])
+				.set(keys.userBySession(session.id), session.userId)
+				.commit()
+		},
+		async updateSessionExpiration(sessionId, expiresAt) {
+			const sessionReq = await db.get<DatabaseSession>(
+				keys.session(sessionId),
+			)
+			const session = sessionReq.value
+			if (!session) {
+				throw new NonExistentSession(
+					"Session not found when updating session expiration",
+				)
+			}
+			await db.atomic()
+				.check(sessionReq)
+				.set(sessionReq.key, {
+					...session,
+					expiresAt,
 				})
-				deleteSessions?.forEach((id) => {
-					tx.delete(keys.session(id))
-					tx.delete(keys.userByKey(id))
-				})
-				await tx.commit()
-			},
-		}
-		return { ...user, ...session }
+				.commit()
+		},
+	}
+	return {
+		adapter,
+		async deleteUser(userId, cb) {
+			const deleteSessions =
+				(await db.get<string[]>(keys.sessionsByUser(userId)))
+					.value
+			const tx = await db.atomic()
+				.delete(keys.sessionsByUser(userId))
+			await cb(tx, userId)
+			deleteSessions?.forEach((id) => {
+				tx.delete(keys.session(id))
+			})
+			await tx.commit()
+		},
 	}
 }
+
+export class MissingSessionUserID extends Error {}
+export class SessionUserNotFound extends Error {}
+export class SessionExists extends Error {}
+export class NonExistentSession extends Error {}
