@@ -42,6 +42,9 @@ function createKeys(
 		sessionsByUser(user_id: string) {
 			return authPrefix([...user_sessions, user_id])
 		},
+		setSessionsByUser(user_id: string, session_id: string) {
+			return authPrefix([...user_sessions, user_id, session_id])
+		},
 	}
 }
 
@@ -83,15 +86,16 @@ export default function kv(
 				.commit()
 		},
 		async deleteUserSessions(userId) {
-			const list =
-				(await db.get<string[]>(keys.sessionsByUser(userId))).value ??
-					[]
-			const tx = db.atomic()
-				.set(keys.sessionsByUser(userId), [])
-			list.forEach((id) => {
-				tx.delete(keys.userBySession(id))
-				tx.delete(keys.session(id))
+			const sessions = db.list<string>({
+				prefix: keys.sessionsByUser(userId),
 			})
+			const tx = db.atomic()
+			for await (const session of sessions) {
+				const sessionId = session.value;
+				tx.delete(keys.userBySession(sessionId))
+				tx.delete(keys.session(sessionId));
+				tx.delete(session.key)
+			}
 			await tx.commit()
 		},
 		// Make sure to return session even if user could not be found, tells lucia to delete the stale session
@@ -109,14 +113,17 @@ export default function kv(
 			return [session, user]
 		},
 		async getUserSessions(userId) {
-			const sessionids =
-				(await db.get<string[]>(keys.sessionsByUser(userId))).value
-			if (!sessionids) return []
-			const sessionkeys = sessionids.map((id) => keys.session(id))
-			const list = await db.getMany<DatabaseSession[]>(sessionkeys)
-			return list.map((key) => key.value).filter((key) =>
-				key !== null
-			) as DatabaseSession[]
+			const list: DatabaseSession[] = []
+			const sessions = db.list<string>({
+				prefix: keys.sessionsByUser(userId),
+			})
+			for await (const session of sessions) {
+				list.push(
+					(await db.get<DatabaseSession>(keys.session(session.value)))
+						?.value!,
+				)
+			}
+			return list
 		},
 		async setSession(session) {
 			if (!session.userId) {
@@ -131,24 +138,16 @@ export default function kv(
 					"Invalid User ID when setting session.",
 				)
 			}
-			const exists =
-				(await db.get<DatabaseSession>(keys.session(session.id))).value
-			if (exists) {
-				throw new SessionExists(
-					"Attempting to set session that already exists.",
-				)
-			}
-			const oldValues =
-				(await db.get<string[]>(keys.sessionsByUser(session.userId)))
-					.value ?? []
-			await db.atomic()
+			const res = await db.atomic()
+				.check({ key: keys.session(session.id), versionstamp: null })
 				.set(keys.session(session.id), session)
-				.set(keys.sessionsByUser(session.userId), [
-					...oldValues,
+				.set(
+					keys.setSessionsByUser(session.userId, session.id),
 					session.id,
-				])
+				)
 				.set(keys.userBySession(session.id), session.userId)
 				.commit()
+			if (!res.ok) throw new SessionExists("Session already exists")
 		},
 		async updateSessionExpiration(sessionId, expiresAt) {
 			const sessionReq = await db.get<DatabaseSession>(
