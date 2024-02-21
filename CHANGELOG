@@ -1,0 +1,5 @@
+1.0.1:
+    entire keychain is now exported
+    Delete expired sessions is exported on both the lucia adapter and the general return
+    switch from Deno.kv to npm:@deno/kv, just for better compatibility.
+    remove building for npm & yank project from npm, we are now using jsr. anyone who wants to use a new verision will have to wait. sorry.

@@ -1,17 +1,18 @@
 import type { Adapter, DatabaseSession, DatabaseUser } from "lucia"
+import { KvKeyPart, KvEntry, Kv, AtomicOperation } from "kv";
 export type Options = {
 	/**
 	 * Prefix added to all db calls with the adapter.
 	 */
-	authPrefix: Deno.KvKeyPart[]
+	authPrefix: KvKeyPart[]
 	/**
 	 * Per *object* prefixes
 	 */
 	prefixes: {
-		user: Deno.KvKeyPart[]
-		session: Deno.KvKeyPart[]
-		session_user: Deno.KvKeyPart[]
-		user_sessions: Deno.KvKeyPart[]
+		user: KvKeyPart[]
+		session: KvKeyPart[]
+		session_user: KvKeyPart[]
+		user_sessions: KvKeyPart[]
 	}
 	/*
 		Experimental Options
@@ -19,6 +20,7 @@ export type Options = {
 	experimental: Partial<{
 		/*
 			Use deno expireIn to automatically purge sessions when they expire
+			This will stay experimental and turned off by default until I am entirely sure it won't cause any issues.
 		*/
 		auto_expire: boolean
 		logging: boolean
@@ -29,8 +31,8 @@ async function setSession(
 	session: DatabaseSession,
 	keys: Keys,
 	opt: Options,
-	db: Deno.Kv,
-	allow_exists: boolean | Deno.KvEntry<DatabaseSession> = false,
+	db: Kv,
+	allow_exists: boolean | KvEntry<DatabaseSession> = false,
 ) {
 	if (!session.userId) {
 		throw new MissingSessionUserID(
@@ -66,7 +68,7 @@ async function setSession(
 
 type Keys = ReturnType<typeof createKeys>
 
-function createKeys(
+function createKeys<Opt extends Options>(
 	{
 		authPrefix: auth,
 		prefixes: {
@@ -75,17 +77,17 @@ function createKeys(
 			session_user,
 			user_sessions,
 		},
-	}: Options,
-) {
-	function authPrefix(key: Deno.KvKey) {
+	}: Opt,
+): { user(user_id: string): KvKeyPart[], session(session_id?: string): KvKeyPart[], userBySession(session_id: string): KvKeyPart[], sessionsByUser(user_id: string): KvKeyPart[], setSessionsByUser(user_id: string, session_id: string): KvKeyPart[] } {
+	function authPrefix(key: KvKeyPart[]) {
 		return [...auth, ...key]
 	}
 	return {
 		user(user_id: string) {
 			return authPrefix([...user, user_id])
 		},
-		session(session_id: string) {
-			return authPrefix([...session, session_id])
+		session(session_id?: string) {
+			return authPrefix(session_id ? [...session, session_id] : session)
 		},
 		userBySession(session_id: string) {
 			return authPrefix([...session_user, session_id])
@@ -100,21 +102,25 @@ function createKeys(
 }
 
 type DeleteCallback = {
-	(tx: Deno.AtomicOperation, userId: string): void | Promise<void>
+	(tx: AtomicOperation, userId: string): void | Promise<void>
 }
 type UserDelete = (userId: string, cb: DeleteCallback) => Promise<void>
 
 type DenoKvAdapter = {
 	deleteUser: UserDelete
 	adapter: Adapter
-	userKey(userId: string): Deno.KvKey
+	keys: ReturnType<typeof createKeys>,
+	/**
+	 * Deletes all expired sessions.
+	 * This is not part of the lucia adapter because it should only be done in a cron job, or locally because of the time it would take for a big database.
+	 */
+	deleteExpiredSessions(): Promise<void>
 }
 
-export default function kv(
-	db: Deno.Kv,
+export default function luciaKvAdapter(
+	db: Kv,
 	options?: Partial<Options>,
 ): DenoKvAdapter {
-	if (!globalThis?.Deno) throw new Error("Are you running in Deno?")
 	const opt: Options = Object.assign<Options, Partial<Options>>({
 		authPrefix: ["auth"],
 		prefixes: {
@@ -223,7 +229,19 @@ export default function kv(
 		},
 
 		async deleteExpiredSessions() {
-			throw new Error("not implemented.")
+			const sessions: DatabaseSession[] = []
+			const iter = db.list<DatabaseSession>({ prefix: keys.session() });
+			for await (const res of iter) sessions.push(res.value);
+			const tx = db.atomic();
+			const now = new Date().getTime();
+			for (const session of sessions) {
+				if (session.expiresAt.getTime() < now) {
+					tx.delete(keys.session(session.id))
+					tx.delete(keys.userBySession(session.id))
+					tx.delete(keys.sessionsByUser(session.userId))
+				}
+			}
+			await tx.commit()
 		},
 	}
 	return {
@@ -234,16 +252,20 @@ export default function kv(
 					.value
 			const tx = db.atomic()
 				.delete(keys.sessionsByUser(userId))
+				.delete(keys.user(userId))
 			await cb(tx, userId)
 			deleteSessions?.forEach((id) => {
-				if (opt.experimental.logging) console.log("delete session:" + id)
+				if (opt.experimental.logging) {
+					console.log("delete session:" + id)
+				}
 				tx.delete(keys.session(id))
 				tx.delete(keys.userBySession(id))
 			})
 			if (opt.experimental.logging) console.log("delete user:" + userId)
 			await tx.commit()
 		},
-		userKey: (userId: string): Deno.KvKey => keys.user(userId),
+		deleteExpiredSessions: adapter.deleteExpiredSessions,
+		keys
 	}
 }
 
@@ -252,4 +274,4 @@ export class SessionUserNotFound extends Error {}
 export class SessionExists extends Error {}
 export class NonExistentSession extends Error {}
 
-export { kv }
+export { luciaKvAdapter }
